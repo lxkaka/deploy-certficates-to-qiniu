@@ -1,0 +1,70 @@
+name: Auto Renew and Deploy SSL Certificates
+
+on:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: '0 0 20 */2 *' # 每两个月的第二十天执行一次
+
+jobs:
+  renew-deploy-cert:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v2
+
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: '3.8'
+
+    - name: Install acme.sh
+      env:
+        EMAIL: ${{ secrets.EMAIL}}
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y socat
+        curl https://get.acme.sh | sh -s email="${EMAIL}"
+
+    - name: Prepare acme.sh credentials
+      run: |
+        mkdir -p ~/.acme.sh
+        IFS=',' read -r -a domain_array <<< "${{ secrets.DOMAINS }}"
+        for domain in "${domain_array[@]}"; do
+          mkdir -p ~/certs/${domain}
+        done
+
+    - name: Obtain SSL Certificates
+      env:
+        DOMAINS: ${{ secrets.DOMAINS }}
+        Ali_Key: ${{ secrets.ALIYUN_ACCESS_KEY_ID }}
+        Ali_Secret: ${{ secrets.ALIYUN_ACCESS_KEY_SECRET }}
+      run: |
+        IFS=',' read -r -a domain_array <<< "${DOMAINS}"
+        for domain in "${domain_array[@]}"; do
+          ~/.acme.sh/acme.sh --issue --dns dns_ali -d "*.${domain}" \
+          --key-file ~/certs/${domain}/privkey.pem --fullchain-file ~/certs/${domain}/fullchain.pem
+        done
+
+
+    - name: Install Python dependencies
+      run: pip install -r requirements.txt
+
+    - name: Upload certificates to qiniu CDN
+      env:
+        QINIU_ACCESS_KEY: ${{ secrets.QINIU_ACCESS_KEY }}
+        QINIU_ACCESS_SECRET: ${{ secrets.QINIU_ACCESS_SECRET }}
+        QINIU_DOMAIN: ${{ secrets.DOMAINS }}
+  
+      run: python upload_cert.py
+
+    - name: Clean up
+      env:
+        DOMAINS: ${{ secrets.DOMAINS }}
+      run: |
+        IFS=',' read -r -a domain_array <<< "${DOMAINS}"
+        for domain in "${domain_array[@]}"; do
+          rm -rf ~/certs/${domain}
+        done
